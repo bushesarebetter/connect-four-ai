@@ -151,13 +151,127 @@ class Negamax:
         return best
 
 
+class Node:
+    __slots__ = ("move", "parent", "children", "untried", "wins", "visits", "player")
+
+    def __init__(self, move, parent, untried, player):
+        self.move, self.parent, self.untried, self.player = move, parent, untried, player
+        self.children = []
+        self.wins = 0.0
+        self.visits = 0
 
 
+class MCTS:
+    def __init__(self, iterations=1000, c=1.4, seed=None):
+        self.iterations, self.c = iterations, c
+        self.rng = random.Random(seed)
+        self.name = f"mcts-{iterations}"
+
+    def choose(self, board):
+        rng, c = self.rng, self.c
+        root = Node(None, None, board.legal(), (board.moves - 1) & 1)
+        for _ in range(self.iterations):
+            node, b = root, board.copy()
+            while not node.untried and node.children:
+                log_n = math.log(node.visits)
+                node = max(node.children,
+                           key=lambda n: n.wins / n.visits + c * math.sqrt(log_n / n.visits))
+                b.play(node.move)
+            if node.untried:
+                m = node.untried.pop(rng.randrange(len(node.untried)))
+                b.play(m)
+                terminal = b.last_won() or b.full()
+                child = Node(m, node, [] if terminal else b.legal(), (b.moves - 1) & 1)
+                node.children.append(child)
+                node = child
+            winner = self.rollout(b)
+            while node:
+                node.visits += 1
+                if winner is None:
+                    node.wins += 0.5
+                elif winner == node.player:
+                    node.wins += 1
+                node = node.parent
+        return max(root.children, key=lambda n: n.visits).move
+
+    def rollout(self, b):
+        if b.last_won():
+            return (b.moves - 1) & 1
+        while not b.full():
+            b.play(self.rng.choice([c for c in range(W) if b.can_play(c)]))
+            if b.last_won():
+                return (b.moves - 1) & 1
+        return None
 
 
+def play_game(p0, p1):
+    """Returns 0 or 1 for the winning seat, None for a draw."""
+    b = Board()
+    players = (p0, p1)
+    while True:
+        b.play(players[b.moves & 1].choose(b))
+        if b.last_won():
+            return (b.moves - 1) & 1
+        if b.full():
+            return None
 
 
+def tournament(depths, iterations, games, seed):
+    for d in depths:
+        nm, mc = Negamax(d), MCTS(iterations, seed=seed)
+        score = {nm.name: 0, mc.name: 0, "draw": 0}
+        t0 = time.time()
+        for g in range(games):
+            seats = (nm, mc) if g % 2 == 0 else (mc, nm)  # alternate who moves first
+            w = play_game(*seats)
+            score["draw" if w is None else seats[w].name] += 1
+        print(f"{nm.name:>12} vs {mc.name:<10} | {nm.name} {score[nm.name] / games:5.0%}"
+              f"  {mc.name} {score[mc.name] / games:5.0%}  draw {score['draw'] / games:5.0%}"
+              f"  ({games} games, {time.time() - t0:.0f}s)")
 
 
+def play_human(ai, human_first):
+    b = Board()
+    human = 0 if human_first else 1
+    print(f"You are {'XO'[human]}. Enter a column 1-7.")
+    while True:
+        print(b, "\n")
+        if b.moves & 1 == human:
+            try:
+                line = input("your move: ")
+            except EOFError:
+                return
+            c = int(line) - 1 if line.strip().isdigit() else -1
+            if not (0 <= c < W and b.can_play(c)):
+                print("illegal move")
+                continue
+        else:
+            c = ai.choose(b)
+            print(f"{ai.name} plays {c + 1}")
+        b.play(c)
+        if b.last_won():
+            print(b)
+            print("You win!" if (b.moves - 1) & 1 == human else "AI wins.")
+            return
+        if b.full():
+            print(b)
+            print("Draw.")
+            return
 
 
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="Connect Four: negamax and MCTS")
+    ap.add_argument("mode", choices=["play", "tournament"])
+    ap.add_argument("--ai", choices=["negamax", "mcts"], default="negamax")
+    ap.add_argument("--depth", type=int, default=8, help="negamax depth for play mode")
+    ap.add_argument("--first", action="store_true", help="human moves first")
+    ap.add_argument("--depths", type=int, nargs="+", default=[2, 4, 6, 8])
+    ap.add_argument("--iters", type=int, default=2000, help="MCTS iterations per move")
+    ap.add_argument("--games", type=int, default=20)
+    ap.add_argument("--seed", type=int, default=0)
+    a = ap.parse_args()
+    if a.mode == "play":
+        ai = Negamax(a.depth) if a.ai == "negamax" else MCTS(a.iters, seed=a.seed)
+        play_human(ai, a.first)
+    else:
+        tournament(a.depths, a.iters, a.games, a.seed)
